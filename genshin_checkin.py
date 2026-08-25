@@ -54,19 +54,48 @@ def get_reward_list(cookie, user_agent):
 
 def get_resin_info(uid, server, cookie, user_agent):
     headers = get_headers(cookie, user_agent)
+    
+    server_map = {
+        "os_asia": "os_asia",
+        "os_cht": "os_cht",
+        "os_euro": "os_euro",
+        "os_usa": "os_usa"
+    }
+    
+    game_server = server_map.get(server, "os_asia")
+    
     params = {
         "uid": uid,
-        "server": server,
-        "genshin_uid": uid
+        "server": game_server
     }
     try:
+        logger.info(f"Fetching resin data for UID: {uid}, Server: {game_server}")
+        logger.info(f"Resin API URL: {GAME_URL}")
+        logger.info(f"Resin API params: {params}")
+        
         res = requests.get(GAME_URL, params=params, headers=headers, timeout=10)
+        logger.info(f"Resin API status code: {res.status_code}")
+        logger.info(f"Resin API full response: {res.text}")
+        
+        if res.status_code != 200:
+            logger.error(f"Resin API HTTP error: {res.status_code}")
+            return None
+            
         data = res.json()
-        logger.info(f"Resin info: {data.get('retcode')}")
-        if data.get("retcode") == 0:
+        retcode = data.get("retcode", -1)
+        message = data.get("message", "")
+        logger.info(f"Resin retcode: {retcode}, message: {message}")
+        
+        if retcode == 0:
+            logger.info(f"Resin data retrieved successfully")
             return data["data"]
+        else:
+            logger.warning(f"Resin API error retcode {retcode}: {message}")
+            return None
     except Exception as e:
-        logger.error(f"Failed to get resin: {str(e)}")
+        logger.error(f"Resin API exception: {type(e).__name__}: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
     return None
 
 
@@ -113,67 +142,78 @@ def build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, r
     missed_days     = sign_info.get("sign_cnt_missed", 0)
 
     lines = []
-    lines.append(f"Genshin Impact - {user_name}")
-    lines.append(f"Date: {now.strftime('%d/%m/%Y %H:%M')} (UTC+8)")
+    lines.append("<b>🎮 Genshin Impact Daily Report</b>")
+    lines.append(f"<i>@{user_name}</i>")
+    lines.append("")
+    lines.append(f"📅 {now.strftime('%d/%m/%Y')} • ⏰ {now.strftime('%H:%M')} (UTC+8)")
     lines.append("")
 
     # สถานะวันนี้
     if already_signed:
-        lines.append("Status: Already checked in today")
+        lines.append("✅ <b>Status:</b> Already checked in today")
     else:
-        lines.append("Status: Check-in successful")
+        lines.append("✅ <b>Status:</b> Check-in successful")
 
     # รางวัลวันนี้
     if today_reward:
         lines.append("")
-        lines.append("Today's reward:")
-        lines.append(f"  {today_reward.get('name', '-')} x{today_reward.get('cnt', 0)}")
+        lines.append(f"🎁 <b>Today's Reward:</b>")
+        lines.append(f"   {today_reward.get('name', '-')} ×{today_reward.get('cnt', 0)}")
 
     # รางวัลพรุ่งนี้
     if tomorrow_reward:
-        lines.append("")
-        lines.append("Tomorrow's reward (preview):")
-        lines.append(f"  {tomorrow_reward.get('name', '-')} x{tomorrow_reward.get('cnt', 0)}")
+        lines.append(f"")
+        lines.append(f"🎁 <b>Tomorrow's Reward (Preview):</b>")
+        lines.append(f"   {tomorrow_reward.get('name', '-')} ×{tomorrow_reward.get('cnt', 0)}")
 
     # สถิติเดือนนี้
     lines.append("")
-    lines.append("This month:")
-    lines.append(f"  Checked in : {total_sign_days} day(s)")
-    lines.append(f"  Missed     : {missed_days} day(s)")
+    lines.append(f"📊 <b>This Month:</b>")
+    lines.append(f"   ✔ Checked in: {total_sign_days} day(s)")
+    lines.append(f"   ✘ Missed: {missed_days} day(s)")
 
     # สรุปรางวัลทั้งเดือน
     if rewards and total_sign_days > 0:
         monthly = summarize_monthly_rewards(rewards, total_sign_days)
         if monthly:
             lines.append("")
-            lines.append("Monthly rewards so far:")
+            lines.append(f"💎 <b>Monthly Rewards Summary:</b>")
             for item_name, qty in monthly.items():
-                lines.append(f"  {item_name} x{qty}")
+                lines.append(f"   • {item_name} ×{qty}")
 
     # Resin tracker
     if resin_info:
         current_resin = resin_info.get("current_resin", 0)
         max_resin = resin_info.get("max_resin", 160)
+        resin_percent = int((current_resin / max_resin) * 100)
         
         lines.append("")
-        lines.append("Resin Status:")
-        lines.append(f"  Current: {current_resin}/{max_resin}")
+        lines.append(f"⚡ <b>Resin Status:</b>")
+        lines.append(f"   {current_resin}/{max_resin} ({resin_percent}%)")
         
         if current_resin < max_resin:
             recovery_time = calculate_resin_recovery_time(current_resin, max_resin)
             if recovery_time:
-                lines.append(f"  Full resin at: {recovery_time.strftime('%H:%M')} (in {int((recovery_time - now).total_seconds() / 3600)} hours)")
+                hours_left = int((recovery_time - now).total_seconds() / 3600)
+                minutes_left = int(((recovery_time - now).total_seconds() % 3600) / 60)
+                lines.append(f"   🔋 Full at: {recovery_time.strftime('%H:%M')} ({hours_left}h {minutes_left}m)")
+        else:
+            lines.append(f"   🔋 Resin is full!")
+    else:
+        lines.append("")
+        lines.append(f"⚡ <b>Resin Status:</b>")
+        lines.append(f"   ⚠ Unable to fetch resin data")
 
     # เช็คอินครั้งถัดไป
     lines.append("")
-    lines.append("Next check-in:")
-    lines.append(f"  {tmrw.strftime('%d/%m/%Y')} at 07:00 (UTC+8)")
+    lines.append(f"🔄 <b>Next Check-in:</b>")
+    lines.append(f"   {tmrw.strftime('%d/%m/%Y')} at 07:00 (UTC+8)")
 
     # แจ้งเตือน Cookie ใกล้หมดอายุ
     if is_cookie_expiring_soon():
         lines.append("")
-        lines.append("Warning: Cookie may expire soon.")
-        lines.append("Please update cookie in GitHub Secrets.")
+        lines.append(f"⚠️ <b>Warning:</b> Cookie expires soon!")
+        lines.append(f"   Please update in GitHub Secrets")
 
     return "\n".join(lines)
 
@@ -184,7 +224,7 @@ def send_telegram(token, chat_id, message):
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        res = requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
+        res = requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=10)
         logger.info(f"Telegram: {res.status_code}")
     except Exception as e:
         logger.error(f"Telegram error: {str(e)}")
