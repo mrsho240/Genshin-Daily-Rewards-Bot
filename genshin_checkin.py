@@ -134,7 +134,7 @@ def summarize_monthly_rewards(rewards, total_sign_days):
     return summary
 
 
-def build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, resin_info, already_signed):
+def build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, already_signed):
     now  = datetime.now(UTC8)
     tmrw = now + timedelta(days=1)
 
@@ -180,29 +180,6 @@ def build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, r
             lines.append(f"💎 <b>Monthly Rewards Summary:</b>")
             for item_name, qty in monthly.items():
                 lines.append(f"   • {item_name} ×{qty}")
-
-    # Resin tracker
-    if resin_info:
-        current_resin = resin_info.get("current_resin", 0)
-        max_resin = resin_info.get("max_resin", 160)
-        resin_percent = int((current_resin / max_resin) * 100)
-        
-        lines.append("")
-        lines.append(f"⚡ <b>Resin Status:</b>")
-        lines.append(f"   {current_resin}/{max_resin} ({resin_percent}%)")
-        
-        if current_resin < max_resin:
-            recovery_time = calculate_resin_recovery_time(current_resin, max_resin)
-            if recovery_time:
-                hours_left = int((recovery_time - now).total_seconds() / 3600)
-                minutes_left = int(((recovery_time - now).total_seconds() % 3600) / 60)
-                lines.append(f"   🔋 Full at: {recovery_time.strftime('%H:%M')} ({hours_left}h {minutes_left}m)")
-        else:
-            lines.append(f"   🔋 Resin is full!")
-    else:
-        lines.append("")
-        lines.append(f"⚡ <b>Resin Status:</b>")
-        lines.append(f"   ⚠ Unable to fetch resin data")
 
     # เช็คอินครั้งถัดไป
     lines.append("")
@@ -265,11 +242,8 @@ def process_user(user_config, user_agent):
             if result.get("retcode") != 0:
                 raise Exception(f"Check-in failed: {result.get('message', 'Unknown error')}")
 
-        # ดึงข้อมูล Resin
-        resin_info = get_resin_info(uid, server, cookie, user_agent)
-
         # สร้าง report
-        report = build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, resin_info, already_signed)
+        report = build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, already_signed)
 
         logger.info(f"\n{report}")
         send_telegram(telegram_token, telegram_chat_id, report)
