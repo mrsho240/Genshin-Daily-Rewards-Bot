@@ -183,6 +183,29 @@ Possible causes:
 
 Solution: Re-extract cookie from Network tab
 
+### Resin unavailable
+
+Open Genshin Impact Battle Chronicle in HoYoLAB with the account that owns the
+configured game UID, and enable Real-Time Notes. Confirm that the notes load there.
+The game UID is different from the HoYoLAB account ID; use the game UID and its server.
+
+- `retcode -100` / `10001`: refresh the HoYoLAB login cookie in `USERS_CONFIG`.
+  A cookie that works for daily check-in may not authenticate Battle Chronicle.
+  Copy the Cookie header from a working Battle Chronicle `dailyNote` request.
+- `retcode 10102`: check Real-Time Notes settings and account ownership.
+- Verification errors: complete the verification in HoYoLAB and retry.
+- HTTP/network errors: retry later; the report still includes the check-in result.
+
+Resin capacity and recovery seconds come from the API, rather than a fixed cap.
+The report shows an explicit unavailable reason when Resin cannot be fetched.
+Do not post cookies or tokens in issue reports; share only the error code/message.
+
+Request format reference: [genshin.py](https://github.com/seriaati/genshin.py),
+particularly `genshin/client/routes.py`, `genshin/client/components/chronicle/genshin.py`
+and `genshin/utility/ds.py`.
+
+Local regression checks: `python -m unittest -v` (mocked API; no account needed).
+
 ### Error: Telegram error 400
 
 Check:
@@ -251,7 +274,7 @@ Uses official HoYoLab API endpoints:
 - Check-in: https://sg-hk4e-api.hoyolab.com/event/sol/sign
 - Sign Info: https://sg-hk4e-api.hoyolab.com/event/sol/info
 - Rewards: https://sg-hk4e-api.hoyolab.com/event/sol/home
-- Resin: https://sg-hk4e-api.hoyoverse.com/game_record/genshin/api/dailyNote
+- Resin: https://sg-public-api.hoyolab.com/event/game_record/genshin/api/dailyNote
 
 Support
 -------

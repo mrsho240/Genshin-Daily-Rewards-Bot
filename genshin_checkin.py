@@ -5,6 +5,11 @@ import sys
 import json
 import requests
 import logging
+import hashlib
+import secrets
+import string
+import time
+from html import escape
 from datetime import datetime, timedelta, timezone
 
 logging.basicConfig(
@@ -16,7 +21,7 @@ logger = logging.getLogger(__name__)
 SIGN_URL    = "https://sg-hk4e-api.hoyolab.com/event/sol/sign"
 INFO_URL    = "https://sg-hk4e-api.hoyolab.com/event/sol/info"
 REWARD_URL  = "https://sg-hk4e-api.hoyolab.com/event/sol/home"
-GAME_URL    = "https://sg-hk4e-api.hoyoverse.com/game_record/genshin/api/dailyNote"
+GAME_URL    = "https://sg-public-api.hoyolab.com/event/game_record/genshin/api/dailyNote"
 ACT_ID      = "e202102251931481"
 UTC8        = timezone(timedelta(hours=8))
 
@@ -52,51 +57,68 @@ def get_reward_list(cookie, user_agent):
     return []
 
 
+class ResinError(Exception):
+    """A safe, actionable diagnostic for the daily-note request."""
+
+
 def get_resin_info(uid, server, cookie, user_agent):
+    if not uid or not str(uid).isdigit():
+        raise ResinError("Set a valid game UID in USERS_CONFIG.")
+    if server not in {"os_asia", "os_cht", "os_euro", "os_usa"}:
+        raise ResinError("Unsupported server in USERS_CONFIG.")
+    if not cookie:
+        raise ResinError("Set the HoYoLAB cookie in USERS_CONFIG.")
+
+    # Overseas Battle Chronicle request format, as used by genshin.py.
+    timestamp = int(time.time())
+    nonce = "".join(secrets.choice(string.ascii_letters) for _ in range(6))
+    digest = hashlib.md5(
+        f"salt=6s25p5ox5y14umn1p61aqyyvbvvl3lrt&t={timestamp}&r={nonce}".encode()
+    ).hexdigest()
     headers = get_headers(cookie, user_agent)
-    
-    server_map = {
-        "os_asia": "os_asia",
-        "os_cht": "os_cht",
-        "os_euro": "os_euro",
-        "os_usa": "os_usa"
-    }
-    
-    game_server = server_map.get(server, "os_asia")
-    
-    params = {
-        "uid": uid,
-        "server": game_server
-    }
+    headers.update({
+        "DS": f"{timestamp},{nonce},{digest}",
+        "x-rpc-app_version": "1.5.0",
+        "x-rpc-client_type": "5",
+        "x-rpc-language": "en-us",
+        "x-rpc-lang": "en-us",
+        "Referer": "https://www.hoyolab.com/",
+        "Origin": "https://www.hoyolab.com",
+        "Accept-Encoding": "gzip, deflate",
+    })
     try:
-        logger.info(f"Fetching resin data for UID: {uid}, Server: {game_server}")
-        logger.info(f"Resin API URL: {GAME_URL}")
-        logger.info(f"Resin API params: {params}")
-        
-        res = requests.get(GAME_URL, params=params, headers=headers, timeout=10)
-        logger.info(f"Resin API status code: {res.status_code}")
-        logger.info(f"Resin API full response: {res.text}")
-        
+        res = requests.get(
+            GAME_URL, params={"role_id": str(uid), "server": server},
+            headers=headers, timeout=10,
+        )
         if res.status_code != 200:
-            logger.error(f"Resin API HTTP error: {res.status_code}")
-            return None
-            
-        data = res.json()
-        retcode = data.get("retcode", -1)
-        message = data.get("message", "")
-        logger.info(f"Resin retcode: {retcode}, message: {message}")
-        
-        if retcode == 0:
-            logger.info(f"Resin data retrieved successfully")
-            return data["data"]
-        else:
-            logger.warning(f"Resin API error retcode {retcode}: {message}")
-            return None
-    except Exception as e:
-        logger.error(f"Resin API exception: {type(e).__name__}: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-    return None
+            raise ResinError(f"Resin API HTTP {res.status_code}; try again later.")
+        payload = res.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid response")
+        code = payload.get("retcode")
+        if code != 0:
+            hints = {
+                -100: "HoYoLAB cookie is invalid or expired; refresh it in GitHub Secrets.",
+                10001: "HoYoLAB authentication failed; refresh the cookie in GitHub Secrets.",
+                10102: "Enable Real-Time Notes in HoYoLAB Battle Chronicle and use the account owning this UID.",
+            }
+            hint = hints.get(code, "Check HoYoLAB Battle Chronicle, the account cookie, UID and server.")
+            if code in {1034, 10035, 10041, 5003}:
+                hint = "Complete the verification in HoYoLAB, then try again."
+            raise ResinError(f"Resin API retcode {code}: {hint}")
+        data = payload["data"]
+        current = int(data["current_resin"])
+        maximum = int(data["max_resin"])
+        recovery = int(data["resin_recovery_time"])
+        if current < 0 or maximum <= 0 or recovery < 0:
+            raise ValueError("Invalid resin values")
+        return {"current_resin": current, "max_resin": maximum,
+                "resin_recovery_time": recovery}
+    except requests.RequestException as exc:
+        raise ResinError("Cannot reach Resin API; try again later.") from exc
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ResinError("Resin API returned an unexpected response.") from exc
 
 
 def do_sign(cookie, user_agent):
@@ -107,17 +129,8 @@ def do_sign(cookie, user_agent):
     return data
 
 
-def calculate_resin_recovery_time(current_resin, max_resin=160):
-    if current_resin >= max_resin:
-        return None
-    
-    resin_needed = max_resin - current_resin
-    minutes_needed = resin_needed * 8
-    
-    now = datetime.now(UTC8)
-    recovery_time = now + timedelta(minutes=minutes_needed)
-    
-    return recovery_time
+def calculate_resin_recovery_time(recovery_seconds):
+    return datetime.now(UTC8) + timedelta(seconds=recovery_seconds)
 
 
 def is_cookie_expiring_soon():
@@ -134,7 +147,7 @@ def summarize_monthly_rewards(rewards, total_sign_days):
     return summary
 
 
-def build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, already_signed):
+def build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, already_signed, resin_info=None, resin_error=None):
     now  = datetime.now(UTC8)
     tmrw = now + timedelta(days=1)
 
@@ -180,6 +193,22 @@ def build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, a
             lines.append(f"💎 <b>Monthly Rewards Summary:</b>")
             for item_name, qty in monthly.items():
                 lines.append(f"   • {item_name} ×{qty}")
+
+    lines.extend(["", "🌙 <b>Resin Status:</b>"])
+    if resin_info:
+        current = resin_info["current_resin"]
+        maximum = resin_info["max_resin"]
+        lines.append(f"   Current: {current}/{maximum}")
+        if current >= maximum:
+            lines.append("   Resin is full!")
+        else:
+            seconds = resin_info["resin_recovery_time"]
+            full_at = calculate_resin_recovery_time(seconds)
+            minutes = (seconds + 59) // 60
+            lines.append(f"   Full at: {full_at:%d/%m %H:%M} (UTC+8)")
+            lines.append(f"   In {minutes // 60}h {minutes % 60}m")
+    else:
+        lines.append(f"   Unavailable: {escape(resin_error or 'No data returned.')}")
 
     # เช็คอินครั้งถัดไป
     lines.append("")
@@ -242,8 +271,16 @@ def process_user(user_config, user_agent):
             if result.get("retcode") != 0:
                 raise Exception(f"Check-in failed: {result.get('message', 'Unknown error')}")
 
+        resin_info = None
+        resin_error = None
+        try:
+            resin_info = get_resin_info(uid, server, cookie, user_agent)
+        except ResinError as exc:
+            resin_error = str(exc)
+            logger.warning("Resin unavailable: %s", resin_error)
+
         # สร้าง report
-        report = build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, already_signed)
+        report = build_report(user_name, sign_info, rewards, today_reward, tomorrow_reward, already_signed, resin_info, resin_error)
 
         logger.info(f"\n{report}")
         send_telegram(telegram_token, telegram_chat_id, report)
